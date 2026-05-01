@@ -1,21 +1,40 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
+	"github.com/weilok2021/Chirpy/internal/database"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	db             *database.Queries
+	platform       string
 }
 
 func main() {
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	cfg := apiConfig{fileserverHits: atomic.Int32{}, platform: os.Getenv("PLATFORM")}
+
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	cfg.db = database.New(db)
 	mux := http.NewServeMux()
 
 	server := &http.Server{
@@ -25,15 +44,14 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 	}
 
-	cfg := apiConfig{fileserverHits: atomic.Int32{}}
-
 	mux.Handle("/app/", (&cfg).middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(".")))))
 	mux.Handle("/app/logo.png", (&cfg).middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir("./assets")))))
 
 	mux.HandleFunc("GET /api/healthz", handlerReadiness)
 	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
 	mux.HandleFunc("GET /admin/metrics", (&cfg).handlerCountRequests)
-	mux.HandleFunc("POST /admin/reset", (&cfg).handlerResetRequestCount)
+	mux.HandleFunc("POST /admin/reset", (&cfg).handlerReset)
+	mux.HandleFunc("POST /api/users", (&cfg).handlerCreateUser)
 
 	log.Fatal(server.ListenAndServe())
 }
@@ -62,12 +80,12 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	req := requestJson{}
 	err := decoder.Decode(&req)
 	if err != nil {
-		respondWithError(w, 500, "Something went wrong")
+		responseWithError(w, 500, "Something went wrong", err)
 		return
 	}
 
 	if len(req.Body) > 140 {
-		respondWithError(w, 400, "Chirp is too long")
+		responseWithError(w, 400, "Chirp is too long", err)
 		return
 	}
 
@@ -95,9 +113,55 @@ func (cfg *apiConfig) handlerCountRequests(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func (cfg *apiConfig) handlerResetRequestCount(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
+	if cfg.platform != "dev" {
+		responseWithError(w, 403, "You've not configured the dev environment", errors.New("403 Forbidden"))
+		return
+	}
 	cfg.fileserverHits.Store(0)
+	if err := cfg.db.DeleteAllUsers(r.Context()); err != nil {
+		responseWithError(w, 500, "Error deleting all users", err)
+		return
+	}
+	responseWithJson(w, 200, struct {
+		Status string `json:"status"`
+	}{
+		Status: "200--Success",
+	})
+}
 
+func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
+	type requestJson struct {
+		Email string `json:"email"`
+	}
+	type User struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+	req := requestJson{}
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
+		responseWithError(w, 500, "Error occured while decoding request body", err)
+		return
+	}
+
+	dbUser, err := cfg.db.CreateUser(r.Context(), req.Email)
+
+	// map database.User to main.User(to have json field in response)
+	jsonUser := User{
+		ID:        dbUser.ID,
+		CreatedAt: dbUser.CreatedAt,
+		UpdatedAt: dbUser.UpdatedAt,
+		Email:     dbUser.Email,
+	}
+	if err != nil {
+		responseWithError(w, 500, "Error occured while creating new user.", err)
+		return
+	}
+
+	responseWithJson(w, 201, jsonUser)
 }
 
 // helper functions
@@ -115,7 +179,7 @@ func replaceProfane(text string) string {
 	return strings.Join(words, " ")
 }
 
-func respondWithError(w http.ResponseWriter, status int, msg string) {
+func responseWithError(w http.ResponseWriter, status int, msg string, rootCause error) {
 	type errorJson struct {
 		Error string `json:"error"`
 	}
@@ -129,7 +193,7 @@ func respondWithError(w http.ResponseWriter, status int, msg string) {
 		return
 	}
 
-	log.Printf("Error decoding parameters: %s", err)
+	fmt.Printf("Show the exact error: %v\n\n\n\n", rootCause)
 	w.WriteHeader(status)
 	w.Write(dat)
 }
