@@ -48,10 +48,10 @@ func main() {
 	mux.Handle("/app/logo.png", (&cfg).middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir("./assets")))))
 
 	mux.HandleFunc("GET /api/healthz", handlerReadiness)
-	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
 	mux.HandleFunc("GET /admin/metrics", (&cfg).handlerCountRequests)
 	mux.HandleFunc("POST /admin/reset", (&cfg).handlerReset)
 	mux.HandleFunc("POST /api/users", (&cfg).handlerCreateUser)
+	mux.HandleFunc("POST /api/chirps", (&cfg).handlerCreateChirp)
 
 	log.Fatal(server.ListenAndServe())
 }
@@ -65,36 +65,36 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
-func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
-	type requestJson struct {
-		Body string `json:"body"`
-	}
-	type returnJson struct {
-		CleanedBody string `json:"cleaned_body"`
-	}
+// func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
+// 	type requestJson struct {
+// 		Body string `json:"body"`
+// 	}
+// 	type returnJson struct {
+// 		CleanedBody string `json:"cleaned_body"`
+// 	}
 
-	// this method will returns json either normal, or error json
-	w.Header().Set("Content-Type", "application/json")
+// 	// this method will returns json either normal, or error json
+// 	// w.Header().Set("Content-Type", "application/json")
 
-	decoder := json.NewDecoder(r.Body)
-	req := requestJson{}
-	err := decoder.Decode(&req)
-	if err != nil {
-		responseWithError(w, 500, "Something went wrong", err)
-		return
-	}
+// 	decoder := json.NewDecoder(r.Body)
+// 	req := requestJson{}
+// 	err := decoder.Decode(&req)
+// 	if err != nil {
+// 		responseWithError(w, 500, "Something went wrong", err)
+// 		return
+// 	}
 
-	if len(req.Body) > 140 {
-		responseWithError(w, 400, "Chirp is too long", err)
-		return
-	}
+// 	if len(req.Body) > 140 {
+// 		responseWithError(w, 400, "Chirp is too long", err)
+// 		return
+// 	}
 
-	formatted_body := replaceProfane(req.Body)
-	resp := returnJson{
-		CleanedBody: formatted_body,
-	}
-	responseWithJson(w, 200, resp)
-}
+// 	formatted_body := replaceProfane(req.Body)
+// 	resp := returnJson{
+// 		CleanedBody: formatted_body,
+// 	}
+// 	responseWithJson(w, 200, resp)
+// }
 
 func handlerReadiness(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
@@ -164,6 +164,51 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	responseWithJson(w, 201, jsonUser)
 }
 
+func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
+	type requestJson struct {
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	req := requestJson{}
+	err := decoder.Decode(&req)
+	if err != nil {
+		responseWithError(w, 500, "Error occured while decoding request", err)
+		return
+	}
+
+	if len(req.Body) > 140 {
+		responseWithError(w, 400, "Chirp is too long", err)
+		return
+	}
+
+	formatted_body := replaceProfane(req.Body)
+	chirp, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
+		Body:   formatted_body,
+		UserID: req.UserID,
+	})
+	if err != nil {
+		responseWithError(w, 500, "Error occured while creating chirp from db", err)
+	}
+
+	// map chirp to another struct with json key defined
+	returnChirp := struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	}
+	responseWithJson(w, 201, returnChirp)
+}
+
 // helper functions
 func replaceProfane(text string) string {
 	profane := "****"
@@ -186,6 +231,9 @@ func responseWithError(w http.ResponseWriter, status int, msg string, rootCause 
 	resp := errorJson{
 		Error: msg,
 	}
+
+	// this method will returns json
+	w.Header().Set("Content-Type", "application/json")
 	dat, err := json.Marshal(resp)
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s", err)
@@ -199,6 +247,9 @@ func responseWithError(w http.ResponseWriter, status int, msg string, rootCause 
 }
 
 func responseWithJson(w http.ResponseWriter, status int, payload interface{}) {
+	// this method will returns json
+
+	w.Header().Set("Content-Type", "application/json")
 	dat, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("Error marshalling JSON: %s", err)
