@@ -24,6 +24,21 @@ type apiConfig struct {
 	platform       string
 }
 
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -55,6 +70,7 @@ func main() {
 
 	// get apis
 	mux.HandleFunc("GET /api/chirps", cfg.handlerListChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirp)
 
 	log.Fatal(server.ListenAndServe())
 }
@@ -105,12 +121,6 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
 	type requestJson struct {
 		Email string `json:"email"`
-	}
-	type User struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
 	}
 	req := requestJson{}
 	decoder := json.NewDecoder(r.Body)
@@ -165,21 +175,14 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// convert chirp to another struct with json key defined
-	returnChirp := struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Body      string    `json:"body"`
-		UserID    uuid.UUID `json:"user_id"`
-	}{
+	// convert chirp to Chirp with json key defined
+	responseWithJson(w, 201, Chirp{
 		ID:        chirp.ID,
 		CreatedAt: chirp.CreatedAt,
 		UpdatedAt: chirp.UpdatedAt,
 		Body:      chirp.Body,
 		UserID:    chirp.UserID,
-	}
-	responseWithJson(w, 201, returnChirp)
+	})
 }
 
 func (cfg *apiConfig) handlerListChirps(w http.ResponseWriter, r *http.Request) {
@@ -188,18 +191,11 @@ func (cfg *apiConfig) handlerListChirps(w http.ResponseWriter, r *http.Request) 
 		responseWithError(w, 500, "Error occured while retrieving chirps from db", err)
 		return
 	}
-	type jsonChirp struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Body      string    `json:"body"`
-		UserID    uuid.UUID `json:"user_id"`
-	}
 
-	// convert each chirp in database.[]Chirp into jsonChirp
-	jsonChirps := make([]jsonChirp, len(chirps))
+	// convert each Chirp in database.[]Chirp into main.Chirp with json key defined
+	jsonChirps := make([]Chirp, len(chirps))
 	for i, chirp := range chirps {
-		jsonChirps[i] = jsonChirp{
+		jsonChirps[i] = Chirp{
 			ID:        chirp.ID,
 			CreatedAt: chirp.CreatedAt,
 			UpdatedAt: chirp.UpdatedAt,
@@ -208,6 +204,27 @@ func (cfg *apiConfig) handlerListChirps(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	responseWithJson(w, 200, jsonChirps)
+}
+
+func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
+	chirpIDString := r.PathValue("chirpID")
+	// Convert string to uuid.UUID
+	chirpID, err := uuid.Parse(chirpIDString)
+	if err != nil {
+		responseWithError(w, 500, "failed to parse UUID", err)
+	}
+
+	chirp, err := cfg.db.GetChirp(r.Context(), chirpID)
+	if err != nil {
+		responseWithError(w, 404, "Chirp not exist in db", err)
+	}
+	responseWithJson(w, 200, Chirp{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	})
 }
 
 // helper functions
