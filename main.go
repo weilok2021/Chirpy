@@ -53,6 +53,9 @@ func main() {
 	mux.HandleFunc("POST /api/users", (&cfg).handlerCreateUser)
 	mux.HandleFunc("POST /api/chirps", (&cfg).handlerCreateChirp)
 
+	// get apis
+	mux.HandleFunc("GET /api/chirps", cfg.handlerListChirps)
+
 	log.Fatal(server.ListenAndServe())
 }
 
@@ -64,37 +67,6 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-
-// func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
-// 	type requestJson struct {
-// 		Body string `json:"body"`
-// 	}
-// 	type returnJson struct {
-// 		CleanedBody string `json:"cleaned_body"`
-// 	}
-
-// 	// this method will returns json either normal, or error json
-// 	// w.Header().Set("Content-Type", "application/json")
-
-// 	decoder := json.NewDecoder(r.Body)
-// 	req := requestJson{}
-// 	err := decoder.Decode(&req)
-// 	if err != nil {
-// 		responseWithError(w, 500, "Something went wrong", err)
-// 		return
-// 	}
-
-// 	if len(req.Body) > 140 {
-// 		responseWithError(w, 400, "Chirp is too long", err)
-// 		return
-// 	}
-
-// 	formatted_body := replaceProfane(req.Body)
-// 	resp := returnJson{
-// 		CleanedBody: formatted_body,
-// 	}
-// 	responseWithJson(w, 200, resp)
-// }
 
 func handlerReadiness(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
@@ -149,7 +121,7 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 
 	dbUser, err := cfg.db.CreateUser(r.Context(), req.Email)
 
-	// map database.User to main.User(to have json field in response)
+	// convert database.User to main.User(to have json field in response)
 	jsonUser := User{
 		ID:        dbUser.ID,
 		CreatedAt: dbUser.CreatedAt,
@@ -190,9 +162,10 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 	})
 	if err != nil {
 		responseWithError(w, 500, "Error occured while creating chirp from db", err)
+		return
 	}
 
-	// map chirp to another struct with json key defined
+	// convert chirp to another struct with json key defined
 	returnChirp := struct {
 		ID        uuid.UUID `json:"id"`
 		CreatedAt time.Time `json:"created_at"`
@@ -207,6 +180,34 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 		UserID:    chirp.UserID,
 	}
 	responseWithJson(w, 201, returnChirp)
+}
+
+func (cfg *apiConfig) handlerListChirps(w http.ResponseWriter, r *http.Request) {
+	chirps, err := cfg.db.ListChirps(r.Context())
+	if err != nil {
+		responseWithError(w, 500, "Error occured while retrieving chirps from db", err)
+		return
+	}
+	type jsonChirp struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+
+	// convert each chirp in database.[]Chirp into jsonChirp
+	jsonChirps := make([]jsonChirp, len(chirps))
+	for i, chirp := range chirps {
+		jsonChirps[i] = jsonChirp{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserID:    chirp.UserID,
+		}
+	}
+	responseWithJson(w, 200, jsonChirps)
 }
 
 // helper functions
