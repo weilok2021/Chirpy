@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -81,5 +82,25 @@ func TestValidateJWT_TamperedPayloadRejected(t *testing.T) {
 
 	if _, err := ValidateJWT(tampered, testSecret); err == nil {
 		t.Error("expected error for tampered token, got nil")
+	}
+}
+
+func TestGetBearerToken(t *testing.T) {
+	tokenString := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30"
+	header := http.Header{}
+	header.Add("Authorization", "Bearer "+tokenString)
+	actual, _ := GetBearerToken(header)
+	if actual != tokenString {
+		t.Errorf("Expected: %v; but Actual: %v\n", tokenString, actual)
+	}
+}
+
+func TestBearerTokenExistence(t *testing.T) {
+	tokenString := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiYWRtaW4iOnRydWUsImlhdCI6MTUxNjIzOTAyMn0.KMUFsIDTnFmyG3nMiGM6H9FNFUROf3wh7SmqJp-QV30"
+	header := http.Header{}
+	header.Add("Authorization", "Bearer "+tokenString)
+	_, err := GetBearerToken(header)
+	if err != nil {
+		t.Fatalf("Error: %v", err)
 	}
 }

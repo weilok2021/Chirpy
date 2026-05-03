@@ -23,6 +23,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	secretKey      string
 }
 
 type Chirp struct {
@@ -43,7 +44,7 @@ type User struct {
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
-	cfg := apiConfig{fileserverHits: atomic.Int32{}, platform: os.Getenv("PLATFORM")}
+	cfg := apiConfig{fileserverHits: atomic.Int32{}, platform: os.Getenv("PLATFORM"), secretKey: os.Getenv("JWT_SECRET_KEY")}
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -135,6 +136,7 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	hashedPassword, err := auth.HashPassword(req.Password)
 	if err != nil {
 		responseWithError(w, 500, "Error occured while hashing new password", err)
+		return
 	}
 	dbUser, err := cfg.db.CreateUser(r.Context(), database.CreateUserParams{
 		Email:          req.Email,
@@ -159,16 +161,28 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 
 func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
 	type requestJson struct {
-		Body   string    `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
 	}
 
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		responseWithError(w, 401, "401 Unauthorized", err)
+		return
+	}
+
+	// Decode request body after we get tokenString from client request header
 	decoder := json.NewDecoder(r.Body)
 	req := requestJson{}
-	err := decoder.Decode(&req)
-	if err != nil {
+	decodeErr := decoder.Decode(&req)
+	if decodeErr != nil {
 		responseWithError(w, 500, "Error occured while decoding request", err)
 		return
+	}
+
+	// Get user's uuid with jwt token string
+	userID, err := auth.ValidateJWT(tokenString, cfg.secretKey)
+	if err != nil {
+		responseWithError(w, 401, "401 Unauthorized", err)
 	}
 
 	if len(req.Body) > 140 {
@@ -179,7 +193,7 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 	formatted_body := replaceProfane(req.Body)
 	chirp, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
 		Body:   formatted_body,
-		UserID: req.UserID,
+		UserID: userID, // userID get from jwt token
 	})
 	if err != nil {
 		responseWithError(w, 500, "Error occured while creating chirp from db", err)
@@ -242,8 +256,9 @@ func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	type requestJson struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email            string        `json:"email"`
+		Password         string        `json:"password"`
+		ExpiredInSeconds time.Duration `json:"expired_in_seconds"`
 	}
 	req := requestJson{}
 	decoder := json.NewDecoder(r.Body)
@@ -251,6 +266,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		responseWithError(w, 500, "Error occured while decoding login request", err)
 		return
 	}
+
 	user, err := cfg.db.GetUserByEmail(r.Context(), req.Email)
 	if err != nil {
 		responseWithError(w, 401, "Incorrect email", err)
@@ -270,11 +286,32 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	responseWithJson(w, 200, User{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+
+	var jwtExpiresIn time.Duration
+	if req.ExpiredInSeconds == 0 {
+		jwtExpiresIn = time.Hour
+	} else {
+		jwtExpiresIn = req.ExpiredInSeconds
+	}
+
+	// generate jwt token string
+	tokenString, err := auth.MakeJWT(user.ID, cfg.secretKey, jwtExpiresIn)
+	if err != nil {
+		responseWithError(w, 401, "JWT token creation error", err)
+	}
+
+	// return a struct that embed User struct and with extra field: "token"
+	responseWithJson(w, 200, struct {
+		User            // Embedded struct to get all fields definition from User
+		JWTToken string `json:"token"`
+	}{
+		User: User{
+			ID:        user.ID,
+			CreatedAt: user.CreatedAt,
+			UpdatedAt: user.UpdatedAt,
+			Email:     user.Email,
+		},
+		JWTToken: tokenString,
 	})
 }
 
