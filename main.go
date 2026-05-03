@@ -70,11 +70,14 @@ func main() {
 	mux.HandleFunc("POST /api/users", (&cfg).handlerCreateUser)
 	mux.HandleFunc("POST /api/chirps", (&cfg).handlerCreateChirp)
 	mux.HandleFunc("POST /api/login", cfg.handlerLogin)
+	mux.HandleFunc("POST /api/refresh", cfg.handlerRefreshToken)
+	mux.HandleFunc("POST /api/revoke", cfg.handlerRevokeToken)
 
 	// get apis
 	mux.HandleFunc("GET /api/chirps", cfg.handlerListChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirp)
 
+	auth.MakeRefreshToken()
 	log.Fatal(server.ListenAndServe())
 }
 
@@ -254,11 +257,15 @@ func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// this handler method will response with 2 tokens:
+//   - JWTToken/access token: stateless token that store user info, last for only 1 hour
+//   - refresh_token: stateful token that store in our database, revoke is possible
+//     to prevent attacker access our api, the meaning of refresh is client can get
+//     new access token from us is they has valid refresh token in our database.
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	type requestJson struct {
-		Email            string        `json:"email"`
-		Password         string        `json:"password"`
-		ExpiredInSeconds time.Duration `json:"expired_in_seconds"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	req := requestJson{}
 	decoder := json.NewDecoder(r.Body)
@@ -287,23 +294,30 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var jwtExpiresIn time.Duration
-	if req.ExpiredInSeconds == 0 {
-		jwtExpiresIn = time.Hour
-	} else {
-		jwtExpiresIn = req.ExpiredInSeconds
-	}
+	// jwt access token expired in 1 hour
+	var jwtExpiresIn time.Duration = time.Hour
 
 	// generate jwt token string
-	tokenString, err := auth.MakeJWT(user.ID, cfg.secretKey, jwtExpiresIn)
+	jwtTokenString, err := auth.MakeJWT(user.ID, cfg.secretKey, jwtExpiresIn)
 	if err != nil {
 		responseWithError(w, 401, "JWT token creation error", err)
 	}
 
+	// generate a refresh token string
+	refreshTokenString := auth.MakeRefreshToken()
+	// define DAY constant as 24 hours
+	const DAY time.Duration = time.Hour * 24
+	cfg.db.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+		Token:     refreshTokenString,
+		UserID:    user.ID,
+		ExpiresAt: time.Now().Add(60 * DAY),
+	})
+
 	// return a struct that embed User struct and with extra field: "token"
 	responseWithJson(w, 200, struct {
-		User            // Embedded struct to get all fields definition from User
-		JWTToken string `json:"token"`
+		User                // Embedded struct to get all fields definition from User
+		JwtToken     string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
 	}{
 		User: User{
 			ID:        user.ID,
@@ -311,8 +325,71 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt: user.UpdatedAt,
 			Email:     user.Email,
 		},
-		JWTToken: tokenString,
+		JwtToken:     jwtTokenString,
+		RefreshToken: refreshTokenString,
 	})
+}
+
+func (cfg *apiConfig) handlerRefreshToken(w http.ResponseWriter, r *http.Request) {
+	clientToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		responseWithError(w, 401, "Error occured while extracting bearer token", err)
+		return
+	}
+
+	dbToken, err := cfg.db.GetRefreshToken(r.Context(), clientToken)
+	if err != nil {
+		responseWithError(w, 401, "Refresh token does not exist", err)
+		return
+	}
+
+	// refresh token expired
+	if time.Now().After(dbToken.ExpiresAt) {
+		responseWithError(w, 401, "Refresh token Expired", err)
+		return
+	}
+
+	// refresh token revoked
+	// sql.Nulltime.Valid returns true when value is not NULL,
+	// in our case, RevokedAt not null represents revoked before
+	if dbToken.RevokedAt.Valid {
+		responseWithError(w, 401, "Refresh token revoked by user", err)
+	}
+
+	user, err := cfg.db.GetUserFromRefreshToken(r.Context(), dbToken.Token)
+	if err != nil {
+		responseWithError(w, 401, "Error occured while retrieving user by refresh token from db", err)
+	}
+
+	// jwt access token expired in 1 hour
+	var jwtExpiresIn time.Duration = time.Hour
+	// generate new jwt access token for user
+	jwtTokenString, err := auth.MakeJWT(user.ID, cfg.secretKey, jwtExpiresIn)
+	if err != nil {
+		responseWithError(w, 401, "JWT token creation error", err)
+	}
+
+	responseWithJson(w, 200, struct {
+		Token string `json:"token"`
+	}{
+		Token: jwtTokenString,
+	})
+}
+func (cfg *apiConfig) handlerRevokeToken(w http.ResponseWriter, r *http.Request) {
+	clientToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		responseWithError(w, 401, "Error occured while extracting bearer token", err)
+		return
+	}
+	if _, err := cfg.db.UpdateRefreshToken(r.Context(), database.UpdateRefreshTokenParams{
+		RevokedAt: sql.NullTime{Time: time.Now(), Valid: true},
+		UpdatedAt: time.Now(),
+		Token:     clientToken,
+	}); err != nil {
+		responseWithError(w, 401, "Can't revoke token that is invalid", err)
+	}
+
+	responseWithJson(w, 204, struct{}{})
 }
 
 // helper functions

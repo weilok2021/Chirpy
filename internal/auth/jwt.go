@@ -49,6 +49,7 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	return userID, nil
 }
 
+// Extract and parse token string from client's request header
 func GetBearerToken(headers http.Header) (string, error) {
 	// bearerToken format: "Bearer TOKEN_STRING"
 	bearerToken := headers.Get("Authorization")
