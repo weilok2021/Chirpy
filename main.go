@@ -77,7 +77,6 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", cfg.handlerListChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirp)
 
-	auth.MakeRefreshToken()
 	log.Fatal(server.ListenAndServe())
 }
 
@@ -300,7 +299,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	// generate jwt token string
 	jwtTokenString, err := auth.MakeJWT(user.ID, cfg.secretKey, jwtExpiresIn)
 	if err != nil {
-		responseWithError(w, 401, "JWT token creation error", err)
+		return
 	}
 
 	// generate a refresh token string
@@ -354,11 +353,13 @@ func (cfg *apiConfig) handlerRefreshToken(w http.ResponseWriter, r *http.Request
 	// in our case, RevokedAt not null represents revoked before
 	if dbToken.RevokedAt.Valid {
 		responseWithError(w, 401, "Refresh token revoked by user", err)
+		return
 	}
 
 	user, err := cfg.db.GetUserFromRefreshToken(r.Context(), dbToken.Token)
 	if err != nil {
 		responseWithError(w, 401, "Error occured while retrieving user by refresh token from db", err)
+		return
 	}
 
 	// jwt access token expired in 1 hour
@@ -367,6 +368,7 @@ func (cfg *apiConfig) handlerRefreshToken(w http.ResponseWriter, r *http.Request
 	jwtTokenString, err := auth.MakeJWT(user.ID, cfg.secretKey, jwtExpiresIn)
 	if err != nil {
 		responseWithError(w, 401, "JWT token creation error", err)
+		return
 	}
 
 	responseWithJson(w, 200, struct {
@@ -387,6 +389,7 @@ func (cfg *apiConfig) handlerRevokeToken(w http.ResponseWriter, r *http.Request)
 		Token:     clientToken,
 	}); err != nil {
 		responseWithError(w, 401, "Can't revoke token that is invalid", err)
+		return
 	}
 
 	responseWithJson(w, 204, struct{}{})
