@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/weilok2021/Chirpy/internal/auth"
 	"github.com/weilok2021/Chirpy/internal/database"
 )
 
@@ -67,6 +68,7 @@ func main() {
 	mux.HandleFunc("POST /admin/reset", (&cfg).handlerReset)
 	mux.HandleFunc("POST /api/users", (&cfg).handlerCreateUser)
 	mux.HandleFunc("POST /api/chirps", (&cfg).handlerCreateChirp)
+	mux.HandleFunc("POST /api/login", cfg.handlerLogin)
 
 	// get apis
 	mux.HandleFunc("GET /api/chirps", cfg.handlerListChirps)
@@ -120,7 +122,8 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
 	type requestJson struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	req := requestJson{}
 	decoder := json.NewDecoder(r.Body)
@@ -129,9 +132,17 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	dbUser, err := cfg.db.CreateUser(r.Context(), req.Email)
+	hashedPassword, err := auth.HashPassword(req.Password)
+	if err != nil {
+		responseWithError(w, 500, "Error occured while hashing new password", err)
+	}
+	dbUser, err := cfg.db.CreateUser(r.Context(), database.CreateUserParams{
+		Email:          req.Email,
+		HashedPassword: hashedPassword,
+	})
 
 	// convert database.User to main.User(to have json field in response)
+	// Purposely exclude HashedPassword in json response for security purpose
 	jsonUser := User{
 		ID:        dbUser.ID,
 		CreatedAt: dbUser.CreatedAt,
@@ -212,11 +223,13 @@ func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
 	chirpID, err := uuid.Parse(chirpIDString)
 	if err != nil {
 		responseWithError(w, 500, "failed to parse UUID", err)
+		return
 	}
 
 	chirp, err := cfg.db.GetChirp(r.Context(), chirpID)
 	if err != nil {
 		responseWithError(w, 404, "Chirp not exist in db", err)
+		return
 	}
 	responseWithJson(w, 200, Chirp{
 		ID:        chirp.ID,
@@ -224,6 +237,44 @@ func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt: chirp.UpdatedAt,
 		Body:      chirp.Body,
 		UserID:    chirp.UserID,
+	})
+}
+
+func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
+	type requestJson struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	req := requestJson{}
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
+		responseWithError(w, 500, "Error occured while decoding login request", err)
+		return
+	}
+	user, err := cfg.db.GetUserByEmail(r.Context(), req.Email)
+	if err != nil {
+		responseWithError(w, 401, "Incorrect email", err)
+		return
+	}
+
+	passwordMatched, err := auth.CheckPasswordHash(req.Password, user.HashedPassword)
+	if err != nil {
+		responseWithError(w, 401, "Error occured while checking password", err)
+		return
+	}
+	if !passwordMatched {
+		responseWithJson(w, 401, struct {
+			Message string `json:"message"`
+		}{
+			Message: "Incorrect Password",
+		})
+		return
+	}
+	responseWithJson(w, 200, User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
 	})
 }
 
