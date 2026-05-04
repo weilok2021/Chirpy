@@ -72,6 +72,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", cfg.handlerLogin)
 	mux.HandleFunc("POST /api/refresh", cfg.handlerRefreshToken)
 	mux.HandleFunc("POST /api/revoke", cfg.handlerRevokeToken)
+	mux.HandleFunc("PUT /api/users", cfg.handlerUpdateUser)
 
 	// get apis
 	mux.HandleFunc("GET /api/chirps", cfg.handlerListChirps)
@@ -159,6 +160,47 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	}
 
 	responseWithJson(w, 201, jsonUser)
+}
+
+func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) {
+	type requestJson struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	req := requestJson{}
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
+		responseWithError(w, 500, "Error occured while decoding login request", err)
+		return
+	}
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		responseWithError(w, 401, "invalid token", err)
+	}
+	userID, err := auth.ValidateJWT(token, cfg.secretKey)
+	if err != nil {
+		responseWithError(w, 401, "invalid token", err)
+	}
+	hashedPassword, _ := auth.HashPassword(req.Password)
+	if err := cfg.db.UpdateUser(r.Context(), database.UpdateUserParams{
+		Email:          req.Email,
+		HashedPassword: hashedPassword,
+		ID:             userID,
+	}); err != nil {
+		responseWithError(w, 401, "User does not exist in db", err)
+	}
+	user, err := cfg.db.GetUserByEmail(r.Context(), req.Email)
+	if err != nil {
+		responseWithError(w, 500, "update email request failed.", err)
+	}
+	// response a user payload without password.
+	responseWithJson(w, 200, User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	})
 }
 
 func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
