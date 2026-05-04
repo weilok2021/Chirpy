@@ -68,15 +68,16 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", (&cfg).handlerCountRequests)
 	mux.HandleFunc("POST /admin/reset", (&cfg).handlerReset)
 	mux.HandleFunc("POST /api/users", (&cfg).handlerCreateUser)
-	mux.HandleFunc("POST /api/chirps", (&cfg).handlerCreateChirp)
 	mux.HandleFunc("POST /api/login", cfg.handlerLogin)
 	mux.HandleFunc("POST /api/refresh", cfg.handlerRefreshToken)
 	mux.HandleFunc("POST /api/revoke", cfg.handlerRevokeToken)
 	mux.HandleFunc("PUT /api/users", cfg.handlerUpdateUser)
 
-	// get apis
+	// chirp apis
+	mux.HandleFunc("POST /api/chirps", (&cfg).handlerCreateChirp)
 	mux.HandleFunc("GET /api/chirps", cfg.handlerListChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirp)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.handlerDeleteChirp)
 
 	log.Fatal(server.ListenAndServe())
 }
@@ -302,6 +303,41 @@ func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
 		Body:      chirp.Body,
 		UserID:    chirp.UserID,
 	})
+}
+
+func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		responseWithError(w, 401, "Missing or malformed Authorization header", err)
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.secretKey)
+	if err != nil {
+		responseWithError(w, 401, "Invalid or expired token", err)
+		return
+	}
+
+	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		responseWithError(w, 401, "Error parsing path variable", err)
+		return
+	}
+
+	chirp, err := cfg.db.GetChirp(r.Context(), chirpID)
+	if err != nil {
+		responseWithError(w, 404, "Chirp not found", err)
+		return
+	}
+	if chirp.UserID != userID {
+		responseWithError(w, 403, "Not the author", nil)
+		return
+	}
+
+	if err := cfg.db.DeleteChirp(r.Context(), chirpID); err != nil {
+		responseWithError(w, 403, "User is not the author", err)
+		return
+	}
+	w.WriteHeader(204)
 }
 
 // this handler method will response with 2 tokens:
