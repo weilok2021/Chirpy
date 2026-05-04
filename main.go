@@ -177,22 +177,28 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 	token, err := auth.GetBearerToken(r.Header)
 	if err != nil {
 		responseWithError(w, 401, "invalid token", err)
+		return
 	}
 	userID, err := auth.ValidateJWT(token, cfg.secretKey)
 	if err != nil {
 		responseWithError(w, 401, "invalid token", err)
+		return
 	}
-	hashedPassword, _ := auth.HashPassword(req.Password)
-	if err := cfg.db.UpdateUser(r.Context(), database.UpdateUserParams{
+
+	hashedPassword, err := auth.HashPassword(req.Password)
+	if err != nil {
+		responseWithError(w, 500, "Failed to hash password", err)
+		return
+	}
+
+	user, err := cfg.db.UpdateUser(r.Context(), database.UpdateUserParams{
 		Email:          req.Email,
 		HashedPassword: hashedPassword,
 		ID:             userID,
-	}); err != nil {
-		responseWithError(w, 401, "User does not exist in db", err)
-	}
-	user, err := cfg.db.GetUserByEmail(r.Context(), req.Email)
+	})
 	if err != nil {
-		responseWithError(w, 500, "update email request failed.", err)
+		responseWithError(w, 500, "User does not exist in db", err)
+		return
 	}
 	// response a user payload without password.
 	responseWithJson(w, 200, User{
