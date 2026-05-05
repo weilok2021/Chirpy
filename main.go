@@ -24,6 +24,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	secretKey      string
+	webhookKey     string
 }
 
 type Chirp struct {
@@ -45,7 +46,12 @@ type User struct {
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
-	cfg := apiConfig{fileserverHits: atomic.Int32{}, platform: os.Getenv("PLATFORM"), secretKey: os.Getenv("JWT_SECRET_KEY")}
+	cfg := apiConfig{
+		fileserverHits: atomic.Int32{},
+		platform:       os.Getenv("PLATFORM"),
+		secretKey:      os.Getenv("JWT_SECRET_KEY"),
+		webhookKey:     os.Getenv("POLKA_KEY"),
+	}
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -492,6 +498,13 @@ func (cfg *apiConfig) handlerUpdateChirpyRed(w http.ResponseWriter, r *http.Requ
 		Data  struct {
 			UserID string `json:"user_id"`
 		} `json:"data"`
+	}
+
+	// Authorization check
+	apiKeyHeader, err := auth.GetAPIKey(r.Header)
+	if err != nil || apiKeyHeader != cfg.webhookKey {
+		responseWithError(w, 401, "apikey error", err)
+		return
 	}
 
 	req := requestJson{}
