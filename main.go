@@ -277,8 +277,10 @@ func (cfg *apiConfig) handlerListChirps(w http.ResponseWriter, r *http.Request) 
 	// optional query paramenter
 	// eg: GET http://localhost:8080/api/chirps?author_id=1
 	userIDString := r.URL.Query().Get("author_id")
-	// If the author_id query parameter is provided,
-	// the endpoint should return only the chirps for that author.
+
+	var chirps []database.Chirp
+
+	// If the author_id query parameter is provided, the endpoint should return only the chirps for that author.
 	if userIDString != "" {
 		// Convert string to uuid.UUID
 		userID, err := uuid.Parse(userIDString)
@@ -286,32 +288,19 @@ func (cfg *apiConfig) handlerListChirps(w http.ResponseWriter, r *http.Request) 
 			responseWithError(w, 500, "failed to parse user UUID", err)
 			return
 		}
-
-		chirpsByAuthor, err := cfg.db.GetChirpsByAuthor(r.Context(), userID)
+		chirps, err = cfg.db.GetChirpsByAuthor(r.Context(), userID)
 		if err != nil {
 			responseWithError(w, 500, "Error occured while retrieving chirps from db", err)
 			return
 		}
 
-		// convert each Chirp in database.[]Chirp into main.Chirp with json key defined
-		jsonChirpsByAuthor := make([]Chirp, len(chirpsByAuthor))
-		for i, chirp := range chirpsByAuthor {
-			jsonChirpsByAuthor[i] = Chirp{
-				ID:        chirp.ID,
-				CreatedAt: chirp.CreatedAt,
-				UpdatedAt: chirp.UpdatedAt,
-				Body:      chirp.Body,
-				UserID:    chirp.UserID,
-			}
+	} else { // the author_id query paramete is not provided, return all chirps to client
+		var err error
+		chirps, err = cfg.db.ListChirps(r.Context())
+		if err != nil {
+			responseWithError(w, 500, "Error occured while retrieving chirps from db", err)
+			return
 		}
-		responseWithJson(w, 200, jsonChirpsByAuthor)
-		return
-	}
-
-	chirps, err := cfg.db.ListChirps(r.Context())
-	if err != nil {
-		responseWithError(w, 500, "Error occured while retrieving chirps from db", err)
-		return
 	}
 
 	// convert each Chirp in database.[]Chirp into main.Chirp with json key defined
