@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -313,6 +314,19 @@ func (cfg *apiConfig) handlerListChirps(w http.ResponseWriter, r *http.Request) 
 			Body:      chirp.Body,
 			UserID:    chirp.UserID,
 		}
+	}
+
+	// optional sorting query paramenters
+	// example: sort in ascending order, GET http://localhost:8080/api/chirps?sort=asc
+	// example: sort in descending order, GET http://localhost:8080/api/chirps?sort=desc
+	sortingOrder := r.URL.Query().Get("sort")
+	if sortingOrder != "" {
+		if sortingOrder == "asc" {
+			sort.Slice(jsonChirps, func(i, j int) bool { return jsonChirps[i].CreatedAt.Before(jsonChirps[j].CreatedAt) })
+		} else if sortingOrder == "desc" {
+			sort.Slice(jsonChirps, func(i, j int) bool { return jsonChirps[i].CreatedAt.After(jsonChirps[j].CreatedAt) })
+		}
+
 	}
 	responseWithJson(w, 200, jsonChirps)
 }
